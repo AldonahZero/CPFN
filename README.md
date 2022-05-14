@@ -100,7 +100,7 @@ Download KITTI dataset and create some directories first:
            └── velodyne_reduced <-- empty directory
 ```
 
-Note: PointPillar's protos use ```KITTI_DATASET_ROOT=/data/sets/kitti_second/```.
+Note: PointPillar's protos use ```KITTI_DATASET_ROOT=/home/aldno/dataset/kitti_second/```.
 
 #### 2. Create kitti infos:
 
@@ -167,3 +167,9 @@ python pytorch/train.py evaluate --config_path= configs/pointpillars/car/xyres_1
 
 * Detection result will saved in model_dir/eval_results/step_xxx.
 * By default, results are stored as a result.pkl file. To save as official KITTI label format use --pickle_result=False.
+
+### Errors
+ImportError: Python version mismatch: module was compiled for Python 3.8, but the interpreter version is incompatible: 3.7.13 (default, Mar 29 2022, 02:18:16) 
+[GCC 7.5.0].
+ImportError: Python version mismatch: module was compiled for Python 3.7, but the interpreter version is incompatible: 3.8.13 (default, Mar 28 2022, 11:38:47) 
+[GCC 7.5.0].
