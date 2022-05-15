@@ -150,7 +150,7 @@ eval_input_reader: {
 ```
 
 
-### Train
+### 训练
 
 ```bash
 cd ~/second.pytorch/second
@@ -164,7 +164,7 @@ python ./pytorch/train.py train --config_path=./configs/pointpillars/car/xyres_1
 * On a single 1080Ti, training xyres_16 requires approximately 20 hours for 160 epochs.
 
 
-### Evaluate
+### 评估
 
 
 ```bash
@@ -175,7 +175,11 @@ python pytorch/train.py evaluate --config_path= configs/pointpillars/car/xyres_1
 * Detection result will saved in model_dir/eval_results/step_xxx.
 * By default, results are stored as a result.pkl file. To save as official KITTI label format use --pickle_result=False.
 
-### Errors
+### 白宝典
+
+
+
+### 常见错误
 ImportError: Python version mismatch: module was compiled for Python 3.8, but the interpreter version is incompatible: 3.7.13 (default, Mar 29 2022, 02:18:16) 
 [GCC 7.5.0].
 ImportError: Python version mismatch: module was compiled for Python 3.7, but the interpreter version is incompatible: 3.8.13 (default, Mar 28 2022, 11:38:47) 
