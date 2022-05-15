@@ -177,7 +177,19 @@ python pytorch/train.py evaluate --config_path= configs/pointpillars/car/xyres_1
 
 ### 白宝典
 
+#### 1. 评估指标
+检测指标通常由bbox、bev、3d、aos四个检测指标
+* bbox：2D检测框的准确率
+* bev：BEV视图下检测框的准确率
+* 3d：3D检测框的准确率
+* aos：检测目标旋转角度的准确率
 
+car AP @0.7 0.7 0.7 和car AP @0.7 0.5 0.5
+表示的是不同难度情况下算法的平均精度
+
+AP表示的是平均精度、0.7表示的是最小IOU，如下图所示：
+
+#### 2. coco评估指标
 
 ### 常见错误
 ImportError: Python version mismatch: module was compiled for Python 3.8, but the interpreter version is incompatible: 3.7.13 (default, Mar 29 2022, 02:18:16) 
