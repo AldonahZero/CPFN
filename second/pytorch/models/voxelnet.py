@@ -3,7 +3,8 @@ from enum import Enum
 from functools import reduce
 
 import numpy as np
-import sparseconvnet as scn
+
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -18,7 +19,12 @@ from second.pytorch.core.losses import (WeightedSigmoidClassificationLoss,
                                           WeightedSmoothL1LocalizationLoss,
                                           WeightedSoftmaxClassificationLoss)
 from second.pytorch.models.pointpillars import PillarFeatureNet, PointPillarsScatter
+from second.pytorch.models.pointpillars_attention import PillarFeature_PPANet, PSA
+from second.pytorch.models.loss_utils import create_refine_loss
 from second.pytorch.utils import get_paddings_indicator
+
+
+USING_SCN = False  # default: not use SparseConv
 
 
 def _get_pos_neg_loss(cls_loss, labels):
@@ -209,46 +215,48 @@ class SparseMiddleExtractor(nn.Module):
         sparse_shape = np.array(output_shape[1:4]) + [1, 0, 0]
         # sparse_shape[0] = 11
         print(sparse_shape)
-        self.scn_input = scn.InputLayer(3, sparse_shape.tolist())
-        self.voxel_output_shape = output_shape
-        middle_layers = []
+        if USING_SCN:
+            import sparseconvnet as scn
+            self.scn_input = scn.InputLayer(3, sparse_shape.tolist())
+            self.voxel_output_shape = output_shape
+            middle_layers = []
 
-        num_filters = [num_input_features] + num_filters_down1
-        # num_filters = [64] + num_filters_down1
-        filters_pairs_d1 = [[num_filters[i], num_filters[i + 1]]
-                            for i in range(len(num_filters) - 1)]
+            num_filters = [num_input_features] + num_filters_down1
+            # num_filters = [64] + num_filters_down1
+            filters_pairs_d1 = [[num_filters[i], num_filters[i + 1]]
+                                for i in range(len(num_filters) - 1)]
 
-        for i, o in filters_pairs_d1:
-            middle_layers.append(scn.SubmanifoldConvolution(3, i, o, 3, False))
-            middle_layers.append(scn.BatchNormReLU(o, eps=1e-3, momentum=0.99))
-        middle_layers.append(
-            scn.Convolution(
-                3,
-                num_filters[-1],
-                num_filters[-1], (3, 1, 1), (2, 1, 1),
-                bias=False))
-        middle_layers.append(
-            scn.BatchNormReLU(num_filters[-1], eps=1e-3, momentum=0.99))
-        # assert len(num_filters_down2) > 0
-        if len(num_filters_down1) == 0:
-            num_filters = [num_filters[-1]] + num_filters_down2
-        else:
-            num_filters = [num_filters_down1[-1]] + num_filters_down2
-        filters_pairs_d2 = [[num_filters[i], num_filters[i + 1]]
-                            for i in range(len(num_filters) - 1)]
-        for i, o in filters_pairs_d2:
-            middle_layers.append(scn.SubmanifoldConvolution(3, i, o, 3, False))
-            middle_layers.append(scn.BatchNormReLU(o, eps=1e-3, momentum=0.99))
-        middle_layers.append(
-            scn.Convolution(
-                3,
-                num_filters[-1],
-                num_filters[-1], (3, 1, 1), (2, 1, 1),
-                bias=False))
-        middle_layers.append(
-            scn.BatchNormReLU(num_filters[-1], eps=1e-3, momentum=0.99))
-        middle_layers.append(scn.SparseToDense(3, num_filters[-1]))
-        self.middle_conv = Sequential(*middle_layers)
+            for i, o in filters_pairs_d1:
+                middle_layers.append(scn.SubmanifoldConvolution(3, i, o, 3, False))
+                middle_layers.append(scn.BatchNormReLU(o, eps=1e-3, momentum=0.99))
+            middle_layers.append(
+                scn.Convolution(
+                    3,
+                    num_filters[-1],
+                    num_filters[-1], (3, 1, 1), (2, 1, 1),
+                    bias=False))
+            middle_layers.append(
+                scn.BatchNormReLU(num_filters[-1], eps=1e-3, momentum=0.99))
+            # assert len(num_filters_down2) > 0
+            if len(num_filters_down1) == 0:
+                num_filters = [num_filters[-1]] + num_filters_down2
+            else:
+                num_filters = [num_filters_down1[-1]] + num_filters_down2
+            filters_pairs_d2 = [[num_filters[i], num_filters[i + 1]]
+                                for i in range(len(num_filters) - 1)]
+            for i, o in filters_pairs_d2:
+                middle_layers.append(scn.SubmanifoldConvolution(3, i, o, 3, False))
+                middle_layers.append(scn.BatchNormReLU(o, eps=1e-3, momentum=0.99))
+            middle_layers.append(
+                scn.Convolution(
+                    3,
+                    num_filters[-1],
+                    num_filters[-1], (3, 1, 1), (2, 1, 1),
+                    bias=False))
+            middle_layers.append(
+                scn.BatchNormReLU(num_filters[-1], eps=1e-3, momentum=0.99))
+            middle_layers.append(scn.SparseToDense(3, num_filters[-1]))
+            self.middle_conv = Sequential(*middle_layers)
 
     def forward(self, voxel_features, coors, batch_size):
         # coors[:, 1] += 1
@@ -567,10 +575,11 @@ class VoxelNet(nn.Module):
         vfe_class_dict = {
             "VoxelFeatureExtractor": VoxelFeatureExtractor,
             "VoxelFeatureExtractorV2": VoxelFeatureExtractorV2,
-            "PillarFeatureNet": PillarFeatureNet
+            "PillarFeatureNet": PillarFeatureNet,
+            "PillarFeature_PPANet": PillarFeature_PPANet
         }
         vfe_class = vfe_class_dict[vfe_class_name]
-        if vfe_class_name == "PillarFeatureNet":
+        if vfe_class_name == "PillarFeatureNet" or vfe_class_name == "PillarFeature_PPANet":
             self.voxel_feature_extractor = vfe_class(
                 num_input_features,
                 use_norm,
@@ -613,7 +622,9 @@ class VoxelNet(nn.Module):
 
         rpn_class_dict = {
             "RPN": RPN,
+            "PSA": PSA
         }
+        self.rpn_class_name = rpn_class_name
         rpn_class = rpn_class_dict[rpn_class_name]
         self.rpn = rpn_class(
             use_norm=True,
@@ -653,9 +664,10 @@ class VoxelNet(nn.Module):
     def get_global_step(self):
         return int(self.global_step.cpu().numpy()[0])
 
-    def forward(self, example):
+    def forward(self, example,  refine_weight=2):
         """module's forward should always accept dict and return loss.
         """
+        #print('refine_weight:', refine_weight)
         voxels = example["voxels"]
         num_points = example["num_points"]
         coors = example["coordinates"]
@@ -707,6 +719,7 @@ class VoxelNet(nn.Module):
                 encode_background_as_zeros=self._encode_background_as_zeros,
                 box_code_size=self._box_coder.code_size,
             )
+
             loc_loss_reduced = loc_loss.sum() / batch_size_dev
             loc_loss_reduced *= self._loc_loss_weight
             cls_pos_loss, cls_neg_loss = _get_pos_neg_loss(cls_loss, labels)
@@ -714,69 +727,138 @@ class VoxelNet(nn.Module):
             cls_neg_loss /= self._neg_cls_weight
             cls_loss_reduced = cls_loss.sum() / batch_size_dev
             cls_loss_reduced *= self._cls_loss_weight
-            loss = loc_loss_reduced + cls_loss_reduced
+            coarse_loss = loc_loss_reduced + cls_loss_reduced
+
+
             if self._use_direction_classifier:
                 dir_targets = get_direction_target(example['anchors'],
                                                    reg_targets)
                 dir_logits = preds_dict["dir_cls_preds"].view(
                     batch_size_dev, -1, 2)
+
+
                 weights = (labels > 0).type_as(dir_logits)
                 weights /= torch.clamp(weights.sum(-1, keepdim=True), min=1.0)
-                dir_loss = self._dir_loss_ftor(
-                    dir_logits, dir_targets, weights=weights)
-                dir_loss = dir_loss.sum() / batch_size_dev
-                loss += dir_loss * self._direction_loss_weight
 
-            return {
-                "loss": loss,
-                "cls_loss": cls_loss,
-                "loc_loss": loc_loss,
-                "cls_pos_loss": cls_pos_loss,
-                "cls_neg_loss": cls_neg_loss,
-                "cls_preds": cls_preds,
-                "dir_loss_reduced": dir_loss,
-                "cls_loss_reduced": cls_loss_reduced,
-                "loc_loss_reduced": loc_loss_reduced,
-                "cared": cared,
+                ### compute coarse dir loss
+                coarse_dir_loss = self._dir_loss_ftor(dir_logits, dir_targets, weights=weights)
+                dir_loss = coarse_dir_loss.sum() / batch_size_dev
+                coarse_loss += dir_loss * self._direction_loss_weight
+
+
+            if self.rpn_class_name == "PSA" or self.rpn_class_name == "RefineDet":
+                refine_box_preds = preds_dict["Refine_loc_preds"]
+                refine_cls_preds = preds_dict["Refine_cls_preds"]
+
+                positives = labels > 0
+                reg_weights_ori = positives.type(torch.float32)
+
+                refine_loc_loss, refine_cls_loss = create_refine_loss(
+                                 self._loc_loss_ftor,
+                                 self._cls_loss_ftor,
+                                 example,
+                                 coarse_box_preds=box_preds,
+                                 coarse_cls_preds=cls_preds,
+                                 refine_box_preds=refine_box_preds,
+                                 refine_cls_preds=refine_cls_preds,
+                                 cls_targets=cls_targets,
+                                 cls_weights=cls_weights,
+                                 reg_targets=reg_targets,
+                                 reg_weights=reg_weights,
+                                 num_class=self._num_class,
+                                 encode_background_as_zeros=True,
+                                 encode_rad_error_by_sin=True,
+                                 box_code_size=7,
+                                 reg_weights_ori = reg_weights_ori)
+
+                '''
+                refine_loc_loss, refine_cls_loss = create_refine_loss_V2(self._loc_loss_ftor,
+                                  self._cls_loss_ftor,
+                                  example,
+                                  coarse_box_batch_preds = box_preds,
+                                  coarse_cls_batch_preds = cls_preds,
+                                  refine_box_batch_preds = refine_box_preds,
+                                  refine_cls_batch_preds = refine_box_preds,
+                                  num_class=self._num_class,
+                                  loss_norm_type=self._loss_norm_type,
+                                  encode_background_as_zeros=True,
+                                  encode_rad_error_by_sin=True,
+                                  box_code_size=7, max_voxels=12000,
+                                  anchor_area_threshold=1.0,
+                                  grid_size=[352, 400, 1], voxel_size=[0.2, 0.2, 4],
+                                  pc_range=[0.0,-40.0,-3.0,70.4,40.0, 1.0])
+                '''
+
+
+                refine_loc_loss = refine_weight * refine_loc_loss
+                refine_cls_loss = refine_weight * refine_cls_loss
+
+                refine_loc_loss_reduced = refine_loc_loss.sum() / batch_size_dev
+                refine_loc_loss_reduced *= self._loc_loss_weight  # self._loc_loss_weight = 2.0
+                refine_cls_pos_loss, refine_cls_neg_loss = _get_pos_neg_loss(refine_cls_loss, labels)
+                refine_cls_pos_loss /= self._pos_cls_weight
+                refine_cls_neg_loss /= self._neg_cls_weight
+                refine_cls_loss_reduced = refine_cls_loss.sum() / batch_size_dev
+                refine_cls_loss_reduced *= self._cls_loss_weight
+
+                refine_loss = refine_loc_loss_reduced + refine_cls_loss_reduced  # + refine_iou_loss
+
+                if self._use_direction_classifier:
+                    refine_dir_logits = preds_dict["Refine_dir_preds"].view(batch_size_dev, -1, 2)
+                    ### compute refine dir loss
+                    refine_dir_loss = self._dir_loss_ftor(refine_dir_logits, dir_targets, weights=weights)
+                    refine_dir_loss = refine_dir_loss.sum() / batch_size_dev
+
+                    ### compute refine loss   self._direction_loss_weight = 0.2
+                    refine_loss += refine_dir_loss * self._direction_loss_weight
+
+                total_loss = coarse_loss + refine_loss
+
+                return {
+                    "loss": total_loss,
+                    "coarse_loss": coarse_loss,
+                    "refine_loss": refine_loss,
+                    "cls_loss": cls_loss,
+                    "loc_loss": loc_loss,
+                    "cls_pos_loss": cls_pos_loss,
+                    "cls_neg_loss": cls_neg_loss,
+                    "refine_cls_loss_reduced": refine_cls_loss_reduced,
+                    "refine_loc_loss_reduced": refine_loc_loss_reduced,
+                    "refine_dir_loss_reduced": refine_dir_loss,
+                    "cls_preds": refine_cls_preds,  ##cls_preds,
+                    "dir_loss_reduced": dir_loss,  # dir_loss,
+                    "cls_loss_reduced": cls_loss_reduced,
+                    "loc_loss_reduced": loc_loss_reduced,
+                    "cared": cared,
+                    # "iou_loss": coarse_iou_loss,
+                    # "refine_iou_loss": refine_iou_loss,
+                }
+
+
+            else:
+                return {
+                    "loss": coarse_loss,
+                    "cls_loss": cls_loss,
+                    "loc_loss": loc_loss,
+                    "cls_pos_loss": cls_pos_loss,
+                    "cls_neg_loss": cls_neg_loss,
+                    "cls_preds": cls_preds,
+                    "dir_loss_reduced": dir_loss,
+                    "cls_loss_reduced": cls_loss_reduced,
+                    "loc_loss_reduced": loc_loss_reduced,
+                    "cared": cared,
             }
         else:
-            return self.predict(example, preds_dict)
+            if self.rpn_class_name == "PSA" or self.rpn_class_name == "RefineDet":
+                coarse_output = self.predict_coarse(example, preds_dict)
+                refine_output = self.predict_refine(example, preds_dict)
+                return coarse_output, refine_output
+            else:
+                return self.predict_coarse(example, preds_dict)
 
-    def predict(self, example, preds_dict):
-        t = time.time()
-        batch_size = example['anchors'].shape[0]
-        batch_anchors = example["anchors"].view(batch_size, -1, 7)
-
-        self._total_inference_count += batch_size
-        batch_rect = example["rect"]
-        batch_Trv2c = example["Trv2c"]
-        batch_P2 = example["P2"]
-        if "anchors_mask" not in example:
-            batch_anchors_mask = [None] * batch_size
-        else:
-            batch_anchors_mask = example["anchors_mask"].view(batch_size, -1)
-        batch_imgidx = example['image_idx']
-
-        self._total_forward_time += time.time() - t
-        t = time.time()
-        batch_box_preds = preds_dict["box_preds"]
-        batch_cls_preds = preds_dict["cls_preds"]
-        batch_box_preds = batch_box_preds.view(batch_size, -1,
-                                               self._box_coder.code_size)
-        num_class_with_bg = self._num_class
-        if not self._encode_background_as_zeros:
-            num_class_with_bg = self._num_class + 1
-
-        batch_cls_preds = batch_cls_preds.view(batch_size, -1,
-                                               num_class_with_bg)
-        batch_box_preds = self._box_coder.decode_torch(batch_box_preds,
-                                                       batch_anchors)
-        if self._use_direction_classifier:
-            batch_dir_preds = preds_dict["dir_cls_preds"]
-            batch_dir_preds = batch_dir_preds.view(batch_size, -1, 2)
-        else:
-            batch_dir_preds = [None] * batch_size
-
+    def compute_predict(self, batch_box_preds, batch_cls_preds,
+                        batch_dir_preds, batch_rect, batch_Trv2c,
+                        batch_P2, batch_imgidx, batch_anchors_mask, num_class_with_bg):
         predictions_dicts = []
         for box_preds, cls_preds, dir_preds, rect, Trv2c, P2, img_idx, a_mask in zip(
                 batch_box_preds, batch_cls_preds, batch_dir_preds, batch_rect,
@@ -956,6 +1038,99 @@ class VoxelNet(nn.Module):
                     "image_idx": img_idx,
                 }
             predictions_dicts.append(predictions_dict)
+        return predictions_dicts
+
+    def predict_coarse(self, example, preds_dict):
+        t = time.time()
+        batch_size = example['anchors'].shape[0]
+        batch_anchors = example["anchors"].view(batch_size, -1, 7)
+
+        self._total_inference_count += batch_size
+        batch_rect = example["rect"]
+        batch_Trv2c = example["Trv2c"]
+        batch_P2 = example["P2"]
+        if "anchors_mask" not in example:
+            batch_anchors_mask = [None] * batch_size
+        else:
+            batch_anchors_mask = example["anchors_mask"].view(batch_size, -1)
+        batch_imgidx = example['image_idx']
+
+        self._total_forward_time += time.time() - t
+        t = time.time()
+        batch_box_preds = preds_dict["box_preds"]
+        batch_cls_preds = preds_dict["cls_preds"]
+        batch_box_preds = batch_box_preds.view(batch_size, -1,
+                                               self._box_coder.code_size)
+        num_class_with_bg = self._num_class
+        if not self._encode_background_as_zeros:
+            num_class_with_bg = self._num_class + 1
+
+        batch_cls_preds = batch_cls_preds.view(batch_size, -1,
+                                               num_class_with_bg)
+        batch_box_preds = self._box_coder.decode_torch(batch_box_preds,
+                                                       batch_anchors)
+        if self._use_direction_classifier:
+            batch_dir_preds = preds_dict["dir_cls_preds"]
+            batch_dir_preds = batch_dir_preds.view(batch_size, -1, 2)
+        else:
+            batch_dir_preds = [None] * batch_size
+
+        predictions_dicts = self.compute_predict(batch_box_preds, batch_cls_preds,
+                                                 batch_dir_preds, batch_rect, batch_Trv2c,
+                                                 batch_P2, batch_imgidx, batch_anchors_mask, num_class_with_bg)
+        self._total_postprocess_time += time.time() - t
+        return predictions_dicts
+
+    def predict_refine(self, example, preds_dict):
+        t = time.time()
+        batch_size = example['anchors'].shape[0]
+        batch_anchors = example["anchors"].view(batch_size, -1, 7)
+
+        self._total_inference_count += batch_size
+        batch_rect = example["rect"]
+        batch_Trv2c = example["Trv2c"]
+        batch_P2 = example["P2"]
+        if "anchors_mask" not in example:
+            batch_anchors_mask = [None] * batch_size
+        else:
+            batch_anchors_mask = example["anchors_mask"].view(batch_size, -1)
+        batch_imgidx = example['image_idx']
+
+        self._total_forward_time += time.time() - t
+        t = time.time()
+
+        num_class_with_bg = self._num_class
+        if not self._encode_background_as_zeros:
+            num_class_with_bg = self._num_class + 1
+
+        coarse_box_preds = preds_dict["box_preds"]
+
+        refine_box_preds = preds_dict["Refine_loc_preds"]
+        refine_cls_preds = preds_dict["Refine_cls_preds"]
+
+        coarse_box_preds = coarse_box_preds.view(batch_size, -1,
+                                           self._box_coder.code_size)
+
+        refine_box_preds = refine_box_preds.view(batch_size, -1,
+                                           self._box_coder.code_size)
+
+        de_coarse_boxes = self._box_coder.decode_torch(coarse_box_preds, batch_anchors)
+        de_refine_boxes = self._box_coder.decode_torch(refine_box_preds, de_coarse_boxes)
+
+        batch_box_preds = de_refine_boxes
+        batch_cls_preds = refine_cls_preds
+        batch_cls_preds = batch_cls_preds.view(batch_size, -1,
+                                               num_class_with_bg)
+
+        if self._use_direction_classifier:
+            batch_dir_preds = preds_dict["Refine_dir_preds"]
+            batch_dir_preds = batch_dir_preds.view(batch_size, -1, 2)
+        else:
+            batch_dir_preds = [None] * batch_size
+
+        predictions_dicts = self.compute_predict(batch_box_preds, batch_cls_preds,
+                                                 batch_dir_preds, batch_rect, batch_Trv2c,
+                                                 batch_P2, batch_imgidx, batch_anchors_mask, num_class_with_bg)
         self._total_postprocess_time += time.time() - t
         return predictions_dicts
 

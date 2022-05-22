@@ -1,0 +1,17 @@
+Network: PPA
+# 使用注意力机制模块提取体素特征 配置文件
+PPA:
+    INPUT_C_DIM: 9
+    BOOST_C_DIM: 64  # or 32
+    NUM_POINTS_IN_VOXEL: 100
+    REDUCTION_R: 8
+    # 训练时开启，测试时关闭
+    USE_PACA_WEIGHT: False #True
+PSA:
+    C_Bottle: 128
+    C_Reudce: 32
+
+
+
+
+
