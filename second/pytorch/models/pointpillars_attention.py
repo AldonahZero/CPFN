@@ -30,8 +30,14 @@ class PointAttentionLayer(nn.Module):
         )
 
     def forward(self, x):
+        # 输入x的shape为(K, N, C)，K是voxel数目，N是每个voxel中的points数目，C是每个point的channel数目
         b, w, _ = x.size()
+
+        # 先对输入x的第2维进行max操作
+        # 那么经过第2维的max操作后得到shape为(K, N)的y
         y = torch.max(x, dim=2, keepdim=True)[0].view(b, w)
+
+        # 然后经过2层FC layer得到结果out1也就是PACALayer中的pa_weight
         out1 = self.fc(y).view(b, w, 1)
         return out1
 
@@ -51,6 +57,7 @@ class ChannelAttentionLayer(nn.Module):
         )
 
     def forward(self, x):
+        # CALayer module和PALayer module十分类似，唯一的不同之处是在CALayer module中对输入x进行第1维上的max操作
         b, _, c = x.size()
         y = torch.max(x, dim=1, keepdim=True)[0].view(b, c)
         y = self.fc(y).view(b, 1, c)
@@ -61,6 +68,7 @@ class ChannelAttentionLayer(nn.Module):
 class PointAttentionChannelAttentionLayer(nn.Module):
     '''
     Point-wise attention for each voxel
+    PACALayer包含PALayer和CALayer
     '''
 
     def __init__(self, dim_ca, dim_pa, reduction_r):
@@ -72,10 +80,17 @@ class PointAttentionChannelAttentionLayer(nn.Module):
         self.sig = nn.Sigmoid()
 
     def forward(self, x):
+        # 输入x经过PALayer和CALayermodule后得到pa_weight和ca_weight
         pa_weight = self.pa(x)
         ca_weight = self.ca(x)
+
+        # 通过torch.mul将pa_weight和ca_weight做外积结合在一起
         paca_weight = torch.mul(pa_weight, ca_weight)
+
+        # 再通过sigmoid激活函数得到paca_normal_weight
         paca_normal_weight = self.sig(paca_weight)
+
+        # 最后将x和paca_normal_weight做点积(即attention机制)。
         out = torch.mul(x, paca_normal_weight)
         return out, paca_normal_weight
 
@@ -123,6 +138,14 @@ class VoxelAttentionLayer(nn.Module):
 
 
 class VoxelFeature_PPA(nn.Module):
+    '''
+    模块包含
+    PACALayer (Point-wise Attention and Channel-wise Attention Layer)
+        PALayer
+        CALayer
+    VALayer (Voxel Attention Layer)
+    3个attention。
+    '''
     def __init__(
             self,
             dim_ca=cfg.PPA.INPUT_C_DIM,
@@ -437,6 +460,11 @@ class PSA(nn.Module):
             sum(num_upsample_filters),
             sum(num_upsample_filters) // 3,
             1)
+
+        # 首先Coarse Regression最后concat得到的结果需要经过1层conv得到blottle_conv
+        # 留着在之后Fine Regression中upsample后的element wise add中用。
+        # 接着将RPN中三个block的输出分别引出，
+        # 图中显示的是经过一个叫Pyramid Sampling的模块，实际上Pyramid Sampling就是max pooling和deconv模块的组合
 
         self.block1_dec2x = nn.MaxPool2d(kernel_size=2)  # C=64
         self.block1_dec4x = nn.MaxPool2d(kernel_size=4)  # C=64
