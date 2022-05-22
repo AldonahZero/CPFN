@@ -10,7 +10,7 @@ This is not an official nuTonomy codebase, but it can be used to match the publi
 
 **WARNING: This code is not being actively maintained. This code can be used to reproduce the results in the first version of the paper, https://arxiv.org/abs/1812.05784v1. For an actively maintained repository that can also reproduce PointPillars results on nuScenes, we recommend using [SECOND](https://github.com/traveller59/second.pytorch). We are not the owners of the repository, but we have worked with the author and endorse his code.**
 
-![Example Results](https://s3.bmp.ovh/imgs/2022/05/14/7dff57ac9a3cfb3b.jpg)
+![Example Results](https://github.com/AldonahZero/CPFN/blob/master/images/CPFN.png?raw=true)
 
 
 ## Getting Started
