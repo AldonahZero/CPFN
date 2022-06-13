@@ -664,8 +664,11 @@ class VoxelNet(nn.Module):
     def get_global_step(self):
         return int(self.global_step.cpu().numpy()[0])
 
+
     def forward(self, example,  refine_weight=2):
-        """module's forward should always accept dict and return loss.
+        """
+        module's forward should always accept dict and return loss.
+        模块的前傳需要dict并返回loss。
         """
         #print('refine_weight:', refine_weight)
         voxels = example["voxels"]
@@ -689,19 +692,25 @@ class VoxelNet(nn.Module):
                 preds_dict = self.rpn(spatial_features)
         # preds_dict["voxel_features"] = voxel_features
         # preds_dict["spatial_features"] = spatial_features
+        # 取出预测得到的数据
         box_preds = preds_dict["box_preds"]
         cls_preds = preds_dict["cls_preds"]
         self._total_forward_time += time.time() - t
         if self.training:
+            # 取出数据的gt
             labels = example['labels']
             reg_targets = example['reg_targets']
 
+            # 得到权重的加权系数-->cls_weights[3,168960].reg_weights-->[3,168960],cared-->[3,16
+            # 8960]
             cls_weights, reg_weights, cared = prepare_loss_weights(
                 labels,
                 pos_cls_weight=self._pos_cls_weight,
                 neg_cls_weight=self._neg_cls_weight,
                 loss_norm_type=self._loss_norm_type,
                 dtype=voxels.dtype)
+
+            # 得到最后的cls_tragets
             cls_targets = labels * cared.type_as(labels)
             cls_targets = cls_targets.unsqueeze(-1)
 

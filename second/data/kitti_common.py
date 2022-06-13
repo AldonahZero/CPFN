@@ -282,6 +282,7 @@ def remove_low_height(image_anno, thresh):
     return img_filtered_annotations
 
 def remove_low_score(image_anno, thresh):
+    # print(image_anno)
     img_filtered_annotations = {}
     relevant_annotation_indices = [
         i for i, s in enumerate(image_anno['score']) if s >= thresh

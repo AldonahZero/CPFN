@@ -196,7 +196,7 @@ class VoxelFeature_PPA(nn.Module):
 # 从pointpillars修改
 class PillarFeature_PPANet(nn.Module):
     '''
-    # PillarFeature_TANet is modified from pointpillars.PillarFeatureNet
+    # PillarFeature_PPANet is modified from pointpillars.PillarFeatureNet
     # 引入三重注意力
     '''
 
