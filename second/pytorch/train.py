@@ -174,7 +174,9 @@ def build_inference_net(config_path,
         torchplus.train.try_restore_latest_checkpoints(model_dir, [net])
     else:
         torchplus.train.restore(ckpt_path, net)
-    batch_size = batch_size or input_cfg.batch_size
+
+    # batch_size = batch_size or input_cfg.batch_size
+    batch_size = batch_size
     #batch_size = 1
     net.eval()
     return net

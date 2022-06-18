@@ -47,10 +47,10 @@ class KittiDataset(Dataset):
             det = detection[i]
             # info = self._kitti_infos[gt_image_idxes.index(det_idx)]
             info = self._kitti_infos[i]
-            calib = info["calib"]
-            rect = calib["R0_rect"]
-            Trv2c = calib["Tr_velo_to_cam"]
-            P2 = calib["P2"]
+            # calib = info["calib"]
+            rect = info["calib/R0_rect"]
+            Trv2c = info["calib/Tr_velo_to_cam"]
+            P2 = info["calib/P2"]
             final_box_preds = det["box3d_lidar"].detach().cpu().numpy()
             label_preds = det["label_preds"].detach().cpu().numpy()
             scores = det["scores"].detach().cpu().numpy()
@@ -74,12 +74,12 @@ class KittiDataset(Dataset):
             num_example = 0
             box3d_lidar = final_box_preds
             for j in range(box3d_lidar.shape[0]):
-                image_shape = info["image"]["image_shape"]
-                if bbox[j, 0] > image_shape[1] or bbox[j, 1] > image_shape[0]:
+                img_shape = info["img_shape"]
+                if bbox[j, 0] > img_shape[1] or bbox[j, 1] > img_shape[0]:
                     continue
                 if bbox[j, 2] < 0 or bbox[j, 3] < 0:
                     continue
-                bbox[j, 2:] = np.minimum(bbox[j, 2:], image_shape[::-1])
+                bbox[j, 2:] = np.minimum(bbox[j, 2:], img_shape[::-1])
                 bbox[j, :2] = np.maximum(bbox[j, :2], [0, 0])
                 anno["bbox"].append(bbox[j])
                 # convert center format to kitti format
@@ -178,23 +178,25 @@ class KittiDataset(Dataset):
             assert "lidar" in query
             idx = query["lidar"]["idx"]
         info = self._kitti_infos[idx]
+        print(info)
         res = {
             "lidar": {
                 "type": "lidar",
                 "points": None,
             },
             "metadata": {
-                "image_idx": info["image"]["image_idx"],
-                "image_shape": info["image"]["image_shape"],
+                "image_idx": info["image_idx"],
+                "image_shape": info["img_shape"],
+            # bug
             },
             "calib": None,
             "cam": {}
         }
 
-        pc_info = info["point_cloud"]
-        velo_path = Path(pc_info['velodyne_path'])
+        # pc_info = info["point_cloud"]
+        velo_path = Path(info['velodyne_path'])
         if not velo_path.is_absolute():
-            velo_path = Path(self._root_path) / pc_info['velodyne_path']
+            velo_path = Path(self._root_path) / info['velodyne_path']
         velo_reduced_path = velo_path.parent.parent / (
             velo_path.parent.stem + '_reduced') / velo_path.name
         if velo_reduced_path.exists():
@@ -203,22 +205,22 @@ class KittiDataset(Dataset):
             str(velo_path), dtype=np.float32,
             count=-1).reshape([-1, self.NumPointFeatures])
         res["lidar"]["points"] = points
-        image_info = info["image"]
-        image_path = image_info['image_path']
+        # image_info = info["image"]
+        img_path = info['img_path']
         if read_image:
-            image_path = self._root_path / image_path
-            with open(str(image_path), 'rb') as f:
+            img_path = self._root_path / img_path
+            with open(str(img_path), 'rb') as f:
                 image_str = f.read()
             res["cam"] = {
                 "type": "camera",
                 "data": image_str,
-                "datatype": image_path.suffix[1:],
+                "datatype": img_path.suffix[1:],
             }
-        calib = info["calib"]
+        # calib = info["calib"]
         calib_dict = {
-            'rect': calib['R0_rect'],
-            'Trv2c': calib['Tr_velo_to_cam'],
-            'P2': calib['P2'],
+            'rect': info["calib/R0_rect"],
+            'Trv2c': info["calib/Tr_velo_to_cam"],
+            'P2': info["calib/P2"],
         }
         res["calib"] = calib_dict
         if 'annos' in info:
@@ -232,9 +234,10 @@ class KittiDataset(Dataset):
             # rots = np.concatenate([np.zeros([locs.shape[0], 2], dtype=np.float32), rots], axis=1)
             gt_boxes = np.concatenate([locs, dims, rots[..., np.newaxis]],
                                       axis=1).astype(np.float32)
-            calib = info["calib"]
+            # calib = info["calib"]
             gt_boxes = box_np_ops.box_camera_to_lidar(
-                gt_boxes, calib["R0_rect"], calib["Tr_velo_to_cam"])
+                gt_boxes, info["calib/R0_rect"], info["calib/Tr_velo_to_cam"])
+
 
             # only center format is allowed. so we need to convert
             # kitti [0.5, 0.5, 0] center to [0.5, 0.5, 0.5]
@@ -259,7 +262,7 @@ def convert_to_kitti_info_version2(info):
         info["image"] = {
             'image_shape': info["img_shape"],
             'image_idx': info['image_idx'],
-            'image_path': info['img_path'],
+            'img_path': info['img_path'],
         }
         info["calib"] = {
             "R0_rect": info['calib/R0_rect'],
@@ -306,21 +309,22 @@ def _calculate_num_points_in_gt(data_path,
                                 remove_outside=True,
                                 num_features=4):
     for info in infos:
-        pc_info = info["point_cloud"]
-        image_info = info["image"]
-        calib = info["calib"]
+        # pc_info = info["point_cloud"]
+        # image_info = info["image"]
+        # calib = info["calib"]
         if relative_path:
-            v_path = str(Path(data_path) / pc_info["velodyne_path"])
+            v_path = str(Path(data_path) / info["velodyne_path"])
         else:
-            v_path = pc_info["velodyne_path"]
+            v_path = info["velodyne_path"]
         points_v = np.fromfile(
             v_path, dtype=np.float32, count=-1).reshape([-1, num_features])
-        rect = calib['R0_rect']
-        Trv2c = calib['Tr_velo_to_cam']
-        P2 = calib['P2']
+
+        rect = info["calib/R0_rect"]
+        Trv2c = info["calib/Tr_velo_to_cam"]
+        P2 = info["calib/P2"]
         if remove_outside:
             points_v = box_np_ops.remove_outside_points(
-                points_v, rect, Trv2c, P2, image_info["image_shape"])
+                points_v, rect, Trv2c, P2, info["img_shape"])
 
         # points_v = points_v[points_v[:, 0] > 0]
         annos = info['annos']
@@ -402,17 +406,17 @@ def _create_reduced_point_cloud(data_path,
     with open(info_path, 'rb') as f:
         kitti_infos = pickle.load(f)
     for info in prog_bar(kitti_infos):
-        pc_info = info["point_cloud"]
-        image_info = info["image"]
-        calib = info["calib"]
+        # pc_info = info["point_cloud"]
+        # image_info = info["image"]
+        # calib = info["calib"]
 
-        v_path = pc_info['velodyne_path']
+        v_path = info['velodyne_path']
         v_path = Path(data_path) / v_path
         points_v = np.fromfile(
             str(v_path), dtype=np.float32, count=-1).reshape([-1, 4])
-        rect = calib['R0_rect']
-        P2 = calib['P2']
-        Trv2c = calib['Tr_velo_to_cam']
+        rect = info["calib/R0_rect"]
+        Trv2c = info["calib/Tr_velo_to_cam"]
+        P2 = info["calib/P2"]
         # first remove z < 0 points
         # keep = points_v[:, -1] > 0
         # points_v = points_v[keep]
@@ -420,7 +424,7 @@ def _create_reduced_point_cloud(data_path,
         if back:
             points_v[:, 0] = -points_v[:, 0]
         points_v = box_np_ops.remove_outside_points(points_v, rect, Trv2c, P2,
-                                                    image_info["image_shape"])
+                                                    info["img_shape"])
         if save_path is None:
             save_filename = v_path.parent.parent / (
                 v_path.parent.stem + "_reduced") / v_path.name

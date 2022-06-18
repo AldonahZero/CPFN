@@ -18,12 +18,14 @@ from flask_cors import CORS
 from google.protobuf import text_format
 from skimage import io
 
+from second.core import box_np_ops
 from second.data import kitti_common as kitti
 from second.data.all_dataset import get_dataset_class
 from second.protos import pipeline_pb2
 from second.pytorch.builder import (box_coder_builder, input_reader_builder,
                                     lr_scheduler_builder, optimizer_builder,
                                     second_builder)
+from second.pytorch.inference import TorchInferenceContext
 from second.pytorch.train import example_convert_to_torch
 
 from second.builder import target_assigner_builder, voxel_builder
@@ -33,12 +35,15 @@ CORS(app)
 
 class SecondBackend:
     def __init__(self):
-        self.root_path = None 
+        self.root_path = None
         self.image_idxes = None
         self.dt_annos = None
         self.dataset = None
         self.net = None
         self.device = None
+        self.info_path = None
+        self.kitti_infos = None
+        self.inference_ctx = None
 
 
 BACKEND = SecondBackend()
@@ -57,8 +62,26 @@ def readinfo():
     instance = request.json
     root_path = Path(instance["root_path"])
     response = {"status": "normal"}
+    if not (root_path / "training").exists():
+        response["status"] = "error"
+        response["message"] = "ERROR: your root path is incorrect."
+        print("ERROR: your root path is incorrect.")
+        return response
     BACKEND.root_path = root_path
     info_path = Path(instance["info_path"])
+    if not info_path.exists():
+        response["status"] = "error"
+        response["message"] = "ERROR: info file not exist."
+        print("ERROR: your root path is incorrect.")
+        return response
+    BACKEND.info_path = info_path
+
+    with open(info_path, 'rb') as f:
+        kitti_infos = pickle.load(f)
+    BACKEND.kitti_infos = kitti_infos
+    BACKEND.image_idxes = [info["image_idx"] for info in kitti_infos]
+    response["image_indexes"] = BACKEND.image_idxes
+
     dataset_class_name = instance["dataset_class_name"]
     BACKEND.dataset = get_dataset_class(dataset_class_name)(root_path=root_path, info_path=info_path)
     BACKEND.image_idxes = list(range(len(BACKEND.dataset)))
@@ -95,7 +118,7 @@ def get_pointcloud():
         return error_response("root path is not set")
     image_idx = instance["image_idx"]
     enable_int16 = instance["enable_int16"]
-    
+
     idx = BACKEND.image_idxes.index(image_idx)
     sensor_data = BACKEND.dataset.get_sensor_data(idx)
 
@@ -131,7 +154,7 @@ def get_image():
     instance = request.json
     response = {"status": "normal"}
     if BACKEND.root_path is None:
-        return error_response("root path is not set")    
+        return error_response("root path is not set")
     image_idx = instance["image_idx"]
     idx = BACKEND.image_idxes.index(image_idx)
     query = {
@@ -153,7 +176,7 @@ def get_image():
     return response
 
 @app.route('/api/build_network', methods=['POST'])
-def build_network_():
+def build_network():
     global BACKEND
     instance = request.json
     cfg_path = Path(instance["config_path"])
@@ -161,39 +184,15 @@ def build_network_():
     response = {"status": "normal"}
     if BACKEND.root_path is None:
         return error_response("root path is not set")
+    if BACKEND.kitti_infos is None:
+        return error_response("kitti info is not loaded")
     if not cfg_path.exists():
         return error_response("config file not exist.")
     if not ckpt_path.exists():
         return error_response("ckpt file not exist.")
-    config = pipeline_pb2.TrainEvalPipelineConfig()
-
-    with open(cfg_path, "r") as f:
-        proto_str = f.read()
-        text_format.Merge(proto_str, config)
-    device = device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    model_cfg = config.model.second
-    voxel_generator = voxel_builder.build(model_cfg.voxel_generator)
-    target_assigner_cfg = model_cfg.target_assigner
-    bv_range = voxel_generator.point_cloud_range[[0, 1, 3, 4]]
-    box_coder = box_coder_builder.build(model_cfg.box_coder)
-
-    target_assigner = target_assigner_builder.build(target_assigner_cfg,
-                                                    bv_range, box_coder)
-    # net = build_network(config.model.second).to(device).float().eval()
-    net = second_builder.build(model_cfg, voxel_generator, target_assigner)
-    net.cuda()
-    net.load_state_dict(torch.load(ckpt_path))
-    eval_input_cfg = config.eval_input_reader
-    BACKEND.dataset = input_reader_builder.build(
-        eval_input_cfg,
-        config.model.second,
-        training=False,
-        voxel_generator=net.voxel_generator,
-        target_assigner=net.target_assigner).dataset
-    BACKEND.net = net
-    BACKEND.config = config
-    BACKEND.device = device
+    BACKEND.inference_ctx = TorchInferenceContext()
+    BACKEND.inference_ctx.build(str(cfg_path))
+    BACKEND.inference_ctx.restore(str(ckpt_path))
     response = jsonify(results=[response])
     response.headers['Access-Control-Allow-Headers'] = '*'
     print("build_network successful!")
@@ -207,28 +206,64 @@ def inference_by_idx():
     response = {"status": "normal"}
     if BACKEND.root_path is None:
         return error_response("root path is not set")
+    if BACKEND.kitti_infos is None:
+        return error_response("kitti info is not loaded")
+    if BACKEND.inference_ctx is None:
+        return error_response("inference_ctx is not loaded")
     image_idx = instance["image_idx"]
-    # remove_outside = instance["remove_outside"]
     idx = BACKEND.image_idxes.index(image_idx)
-    example = BACKEND.dataset[idx]
-    # don't forget to pad batch idx in coordinates
-    example["coordinates"] = np.pad(
-        example["coordinates"], ((0, 0), (1, 0)),
-        mode='constant',
-        constant_values=0)
-    # don't forget to add newaxis for anchors
-    example["anchors"] = example["anchors"][np.newaxis, ...]
-    example_torch = example_convert_to_torch(example, device=BACKEND.device)
-    pred = BACKEND.net(example_torch)[0]
-    box3d = pred["box3d_lidar"].detach().cpu().numpy()
-    locs = box3d[:, :3]
-    dims = box3d[:, 3:6]
-    rots = np.concatenate([np.zeros([locs.shape[0], 2], dtype=np.float32), -box3d[:, 6:7]], axis=1)
+    kitti_info = BACKEND.kitti_infos[idx]
+
+    v_path = str(Path(BACKEND.root_path) / kitti_info['velodyne_path'])
+    num_features = 4
+    points = np.fromfile(
+        str(v_path), dtype=np.float32,
+        count=-1).reshape([-1, num_features])
+    rect = kitti_info['calib/R0_rect']
+    P2 = kitti_info['calib/P2']
+    Trv2c = kitti_info['calib/Tr_velo_to_cam']
+    if 'img_shape' in kitti_info:
+        image_shape = kitti_info['img_shape']
+        points = box_np_ops.remove_outside_points(
+            points, rect, Trv2c, P2, image_shape)
+        print(points.shape[0])
+    img_shape = kitti_info["img_shape"] # hw
+    wh = np.array(img_shape[::-1])
+    whwh = np.tile(wh, 2)
+
+    t = time.time()
+    inputs = BACKEND.inference_ctx.get_inference_input_dict(
+        kitti_info, points)
+    print("input preparation time:", time.time() - t)
+    t = time.time()
+    with BACKEND.inference_ctx.ctx():
+        dt_annos = BACKEND.inference_ctx.inference(inputs)[0]
+    print("detection time:", time.time() - t)
+
+    dt_annos = dt_annos[0]
+    print(dt_annos)
+
+    dims = dt_annos['dimensions']
+    num_obj = dims.shape[0]
+    loc = dt_annos['location']
+    rots = dt_annos['rotation_y']
+    labels = dt_annos['name']
+    bbox = dt_annos['bbox'] / whwh
+
+    dt_boxes_camera = np.concatenate(
+        [loc, dims, rots[..., np.newaxis]], axis=1)
+    dt_boxes = box_np_ops.box_camera_to_lidar(
+        dt_boxes_camera, rect, Trv2c)
+    box_np_ops.change_box3d_center_(dt_boxes, src=[0.5, 0.5, 0], dst=[0.5, 0.5, 0.5])
+    locs = dt_boxes[:, :3]
+    dims = dt_boxes[:, 3:6]
+    rots = np.concatenate([np.zeros([num_obj, 2], dtype=np.float32), -dt_boxes[:, 6:7]], axis=1)
     response["dt_locs"] = locs.tolist()
     response["dt_dims"] = dims.tolist()
     response["dt_rots"] = rots.tolist()
-    response["dt_labels"] = pred["label_preds"].detach().cpu().numpy().tolist()
-    response["dt_scores"] = pred["scores"].detach().cpu().numpy().tolist()
+    response["dt_labels"] = labels.tolist()
+    response["dt_scores"] = dt_annos["score"].tolist()
+    response["dt_bbox"] = bbox.tolist()
 
     response = jsonify(results=[response])
     response.headers['Access-Control-Allow-Headers'] = '*'

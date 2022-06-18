@@ -1,1 +1,1 @@
-python ./kittiviewer2/backend/main.py main --port=5002
+python ./kittiviewer2/backend/main.py main --port=16666
